@@ -1,0 +1,150 @@
+#include "ProcessData.h"
+#include <stdio.h>
+#include <cstring>
+#include <unistd.h>
+CProcessData::CProcessData():m_fp(NULL),
+			     m_bIsAlreadyOpen(false)
+{
+	int iRet	= 0;
+	if((iRet = pthread_rwlock_init(&m_rwlock,NULL)))
+		throw iRet;
+}			     
+CProcessData::~CProcessData()
+{
+	if(NULL != m_fp)
+	{
+		CloseLog();
+	}
+	pthread_rwlock_destroy(&m_rwlock);
+}
+
+void CProcessData::CloseLog()
+{
+	if(m_bIsAlreadyOpen && NULL != m_fp)
+		fclose(m_fp);
+	m_fp = NULL;
+	m_bIsAlreadyOpen = false;
+}
+int CProcessData::OpenLog(const string strLogPath)
+{
+	if(strLogPath.empty())
+		return 2;
+	if(m_bIsAlreadyOpen && IsLogExist(strLogPath.c_str()))
+		return 0;
+	if((m_fp = fopen(strLogPath.c_str(),"a+")) == NULL)
+		return 3;
+	m_bIsAlreadyOpen = true;
+	return 0;
+}
+
+bool CProcessData::IsLogOpen()
+{
+	return m_bIsAlreadyOpen && m_fp;
+}
+bool CProcessData::IsLogExist(string strLogPath)
+{
+	return (0==access(strLogPath.c_str(),R_OK));
+}
+int CProcessData::WriteLog(string strLogMsg)
+{
+	if(strLogMsg.empty())
+		return 2;
+	if(!m_bIsAlreadyOpen || NULL == m_fp)
+		return 3;
+	strLogMsg+=string("\n");
+	pthread_rwlock_wrlock(&m_rwlock);
+	fputs(strLogMsg.c_str(),m_fp);
+	fflush(m_fp);
+	pthread_rwlock_unlock(&m_rwlock);
+	return 0;
+}
+int CProcessData::ProcessData(char *data,char *data_out, unsigned long *outlen)
+{
+	int iRet	= 0;
+	unsigned long inlen = strlen(data);
+	if((iRet = httpgzdecompress((Bytef *)data,inlen,(Bytef *)data_out,outlen))!= 0)
+	{
+		return iRet;
+	}
+	return iRet;
+}
+
+/* Uncompress gzip data */
+int CProcessData::gzdecompress(Byte *zdata, unsigned long nzdata,Byte *data, unsigned long *ndata)
+{
+    int err = 0;
+    z_stream d_stream = {0}; /* decompression stream */
+    static char dummy_head[2] = 
+    {
+        0x8 + 0x7 * 0x10,
+        (((0x8 + 0x7 * 0x10) * 0x100 + 30) / 31 * 31) & 0xFF,
+    };
+    d_stream.zalloc = (alloc_func)0;
+    d_stream.zfree = (free_func)0;
+    d_stream.opaque = (voidpf)0;
+    d_stream.next_in  = zdata;
+    d_stream.avail_in = 0;
+    d_stream.next_out = data;
+    if(inflateInit2(&d_stream, -MAX_WBITS) != Z_OK) return -1;
+    //if(inflateInit2(&d_stream, 47) != Z_OK) return -1;
+    while (d_stream.total_out < *ndata && d_stream.total_in < nzdata) {
+        d_stream.avail_in = d_stream.avail_out = 1; /* force small buffers */
+        if((err = inflate(&d_stream, Z_NO_FLUSH)) == Z_STREAM_END) break;
+        if(err != Z_OK )
+        {
+            if(err == Z_DATA_ERROR)
+            {
+                d_stream.next_in = (Bytef*) dummy_head;
+                d_stream.avail_in = sizeof(dummy_head);
+                if((err = inflate(&d_stream, Z_NO_FLUSH)) != Z_OK) 
+                {
+                    return -1;
+                }
+            }
+            else return -1;
+        }
+    }
+    if(inflateEnd(&d_stream) != Z_OK) return -1;
+    *ndata = d_stream.total_out;
+    return 0;
+}
+
+/* HTTP gzip decompress */
+int CProcessData::httpgzdecompress(Byte *zdata, uLong nzdata,Byte *data, uLong *ndata)
+{
+    int err = 0;
+    z_stream d_stream = {0}; /* decompression stream */
+    static char dummy_head[2] = 
+    {
+        0x8 + 0x7 * 0x10,
+        (((0x8 + 0x7 * 0x10) * 0x100 + 30) / 31 * 31) & 0xFF,
+    };
+    d_stream.zalloc = (alloc_func)0;
+    d_stream.zfree = (free_func)0;
+    d_stream.opaque = (voidpf)0;
+    d_stream.next_in  = zdata;
+    d_stream.avail_in = 0;
+    d_stream.next_out = data;
+    if(inflateInit2(&d_stream, 47) != Z_OK) return -1;
+    while (d_stream.total_out < *ndata && d_stream.total_in < nzdata) {
+        d_stream.avail_in = d_stream.avail_out = 1; /* force small buffers */
+        if((err = inflate(&d_stream, Z_NO_FLUSH)) == Z_STREAM_END) break;
+        if(err != Z_OK )
+        {
+            if(err == Z_DATA_ERROR)
+            {
+                d_stream.next_in = (Bytef*) dummy_head;
+                d_stream.avail_in = sizeof(dummy_head);
+                if((err = inflate(&d_stream, Z_NO_FLUSH)) != Z_OK) 
+                {
+                    return -1;
+                }
+            }
+            else return -1;
+        }
+    }
+    if(inflateEnd(&d_stream) != Z_OK) return -1;
+    *ndata = d_stream.total_out;
+    return 0;
+}
+
